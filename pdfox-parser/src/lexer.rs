@@ -1,5 +1,5 @@
 use crate::{
-    error::{PdfLexerError, Result},
+    error::{PdfParserError, Result},
     token::{Keyword, Token},
 };
 
@@ -21,7 +21,7 @@ impl<'a> Lexer<'a> {
         let mut depth = 0;
         loop {
             if self.pos >= self.buf.len() {
-                return Err(PdfLexerError::Eof);
+                return Err(PdfParserError::Eof);
             }
 
             match self.peek() {
@@ -81,7 +81,7 @@ impl<'a> Lexer<'a> {
                         self.bump();
                     }
                     c => {
-                        return Err(PdfLexerError::InvalidByte(c, self.pos + 1));
+                        return Err(PdfParserError::InvalidByte(c, self.pos + 1));
                     }
                 },
                 c => {
@@ -102,7 +102,7 @@ impl<'a> Lexer<'a> {
         loop {
             self.bump_while(is_whitespace);
             if self.is_eof() {
-                return Err(PdfLexerError::Eof);
+                return Err(PdfParserError::Eof);
             }
             if self.peek() == b'>' {
                 self.bump();
@@ -110,13 +110,13 @@ impl<'a> Lexer<'a> {
             }
             let a = (self.peek() as char)
                 .to_digit(16)
-                .ok_or(PdfLexerError::InvalidByte(self.peek(), self.pos))?;
+                .ok_or(PdfParserError::InvalidByte(self.peek(), self.pos))?;
             self.bump();
             self.bump_while(is_whitespace);
             let b = if !self.is_eof() && self.peek() != b'>' {
                 let digit = (self.peek() as char)
                     .to_digit(16)
-                    .ok_or(PdfLexerError::InvalidByte(self.peek(), self.pos))?;
+                    .ok_or(PdfParserError::InvalidByte(self.peek(), self.pos))?;
                 self.bump();
                 digit
             } else {
@@ -139,11 +139,11 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     let a = (self.peek() as char)
                         .to_digit(16)
-                        .ok_or(PdfLexerError::InvalidByte(self.peek(), self.pos))?;
+                        .ok_or(PdfParserError::InvalidByte(self.peek(), self.pos))?;
                     self.bump();
                     let b = (self.peek() as char)
                         .to_digit(16)
-                        .ok_or(PdfLexerError::InvalidByte(self.peek(), self.pos))?;
+                        .ok_or(PdfParserError::InvalidByte(self.peek(), self.pos))?;
                     result.push(((a << 4) | b) as u8);
                 }
                 c if is_whitespace(c) || is_delimiter(c) => break,
@@ -172,7 +172,7 @@ impl<'a> Lexer<'a> {
             b"xref" => Ok(Token::Keyword(Keyword::XRef)),
             b"trailer" => Ok(Token::Keyword(Keyword::Trailer)),
             b"startxref" => Ok(Token::Keyword(Keyword::StartXRef)),
-            other => Err(PdfLexerError::UnknownKeyword(
+            other => Err(PdfParserError::UnknownKeyword(
                 String::from_utf8_lossy(other).to_string(),
                 start,
             )),
@@ -302,7 +302,7 @@ impl<'a> Iterator for Lexer<'a> {
             }
             c if matches!(c, b'+' | b'-' | b'.') || c.is_ascii_digit() => self.parse_number(),
             c if c.is_ascii_alphabetic() => self.parse_keyword(),
-            c => Err(PdfLexerError::InvalidByte(c, self.pos)),
+            c => Err(PdfParserError::InvalidByte(c, self.pos)),
         };
 
         Some(result)
@@ -368,7 +368,7 @@ mod tests {
 
         assert_eq!(
             lexer.next().unwrap().unwrap_err(),
-            PdfLexerError::InvalidByte(b'X', 8)
+            PdfParserError::InvalidByte(b'X', 8)
         );
     }
 
@@ -462,7 +462,7 @@ mod tests {
     fn test_boolean_true_not_prefix_matched() {
         assert_eq!(
             Lexer::new(b"truecolor").next(),
-            Some(Err(PdfLexerError::UnknownKeyword(
+            Some(Err(PdfParserError::UnknownKeyword(
                 "truecolor".to_owned(),
                 0
             )))
@@ -546,7 +546,7 @@ mod tests {
         );
         assert_eq!(
             Lexer::new(b"foobar").next(),
-            Some(Err(PdfLexerError::UnknownKeyword("foobar".to_owned(), 0)))
+            Some(Err(PdfParserError::UnknownKeyword("foobar".to_owned(), 0)))
         );
     }
 
@@ -619,7 +619,7 @@ mod tests {
     fn test_hex_string_invalid_byte() {
         assert_eq!(
             Lexer::new(b"<XY>").next(),
-            Some(Err(PdfLexerError::InvalidByte(b'X', 1)))
+            Some(Err(PdfParserError::InvalidByte(b'X', 1)))
         );
     }
 
@@ -627,7 +627,7 @@ mod tests {
     fn test_hex_string_eof() {
         assert_eq!(
             Lexer::new(b"<48").next(),
-            Some(Err(PdfLexerError::Eof))
+            Some(Err(PdfParserError::Eof))
         );
     }
 

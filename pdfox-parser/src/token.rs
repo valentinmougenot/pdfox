@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Boolean(bool),
     Integer(i64),
@@ -14,7 +14,7 @@ pub enum Token {
     Keyword(Keyword),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Keyword {
     Obj,
     EndObj,
