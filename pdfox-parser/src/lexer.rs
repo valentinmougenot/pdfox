@@ -264,6 +264,25 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+
+    pub fn read_stream_data(&mut self, length: usize) -> Result<Box<[u8]>> {
+        if !self.is_eof() && self.peek() == b'\r' {
+            self.bump();
+        }
+        if !self.is_eof() && self.peek() == b'\n' {
+            self.bump();
+        }
+
+        if self.pos + length > self.buf.len() {
+            return Err(PdfParserError::Eof);
+        }
+
+        let data = self.buf[self.pos..self.pos + length]
+            .to_vec()
+            .into_boxed_slice();
+        self.pos += length;
+        Ok(data)
+    }
 }
 
 impl<'a> Iterator for Lexer<'a> {
@@ -625,28 +644,19 @@ mod tests {
 
     #[test]
     fn test_hex_string_eof() {
-        assert_eq!(
-            Lexer::new(b"<48").next(),
-            Some(Err(PdfParserError::Eof))
-        );
+        assert_eq!(Lexer::new(b"<48").next(), Some(Err(PdfParserError::Eof)));
     }
 
     // --- dict tokens ---
 
     #[test]
     fn test_dict_begin() {
-        assert_eq!(
-            Lexer::new(b"<<").next(),
-            Some(Ok(Token::DictBegin))
-        );
+        assert_eq!(Lexer::new(b"<<").next(), Some(Ok(Token::DictBegin)));
     }
 
     #[test]
     fn test_dict_end() {
-        assert_eq!(
-            Lexer::new(b">>").next(),
-            Some(Ok(Token::DictEnd))
-        );
+        assert_eq!(Lexer::new(b">>").next(), Some(Ok(Token::DictEnd)));
     }
 
     #[test]

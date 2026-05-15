@@ -1,6 +1,6 @@
-use std::{collections::VecDeque, iter::Peekable};
+use std::collections::VecDeque;
 
-use pdfox_core::{PdfObject, PdfString};
+use pdfox_core::{PdfDict, PdfName, PdfObject, PdfString};
 
 use crate::{
     Lexer, PdfParserError,
@@ -9,14 +9,14 @@ use crate::{
 };
 
 pub struct Parser<'a> {
-    lexer: Peekable<Lexer<'a>>,
+    lexer: Lexer<'a>,
     tokens_queue: VecDeque<Result<Token>>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(lexer: Lexer<'a>) -> Self {
         Self {
-            lexer: lexer.peekable(),
+            lexer,
             tokens_queue: VecDeque::with_capacity(4),
         }
     }
@@ -27,31 +27,18 @@ impl<'a> Parser<'a> {
             Some(Ok(Token::Integer(n))) => {
                 if let Some(Ok(Token::Integer(g))) = self.peek_token() {
                     let g = *g;
-                    if self.peek_snd_token() == Some(&Ok(Token::Keyword(Keyword::R))) {
-                        self.next_token();
-                        self.next_token();
-                        return Ok(PdfObject::IndirectRef(n, g));
-                    } else if self.peek_snd_token() == Some(&Ok(Token::Keyword(Keyword::Obj))) {
-                        self.next_token();
-                        self.next_token();
-
-                        let value = self.parse_object()?;
-
-                        return match self.next_token() {
-                            Some(Ok(Token::Keyword(Keyword::EndObj))) => {
-                                Ok(PdfObject::IndirectObject {
-                                    num: n,
-                                    r#gen: g,
-                                    value: Box::new(value),
-                                })
-                            }
-                            Some(Ok(Token::Keyword(Keyword::Stream))) => {
-                                todo!("Handle stream object")
-                            }
-                            Some(Ok(other)) => Err(PdfParserError::UnexpectedToken(other)),
-                            Some(Err(e)) => Err(e),
-                            None => Err(PdfParserError::Eof),
-                        };
+                    match self.peek_snd_token() {
+                        Some(&Ok(Token::Keyword(Keyword::R))) => {
+                            self.next_token();
+                            self.next_token();
+                            return Ok(PdfObject::IndirectRef(n, g));
+                        }
+                        Some(&Ok(Token::Keyword(Keyword::Obj))) => {
+                            self.next_token();
+                            self.next_token();
+                            return self.parse_indirect_object(n, g);
+                        }
+                        _ => {}
                     }
                 }
 
@@ -59,7 +46,7 @@ impl<'a> Parser<'a> {
             }
             Some(Ok(Token::Real(x))) => Ok(PdfObject::Real(x)),
             Some(Ok(Token::Null)) => Ok(PdfObject::Null),
-            Some(Ok(Token::Name(b))) => Ok(PdfObject::Name(b)),
+            Some(Ok(Token::Name(b))) => Ok(PdfObject::Name(b.into())),
             Some(Ok(Token::LiteralString(b))) => Ok(PdfObject::String(PdfString::Literal(b))),
             Some(Ok(Token::HexString(b))) => Ok(PdfObject::String(PdfString::Hex(b))),
             Some(Ok(Token::ArrayBegin)) => {
@@ -83,23 +70,77 @@ impl<'a> Parser<'a> {
                 loop {
                     match self.next_token() {
                         Some(Ok(Token::DictEnd)) => {
-                            return Ok(PdfObject::Dictionary(dict));
+                            return Ok(PdfObject::Dictionary(dict.into()));
                         }
                         Some(Ok(Token::Name(key))) => {
                             let value = self.parse_object()?;
-                            dict.push((key, value));
+                            dict.push((key.into(), value));
                         }
                         Some(Ok(other)) => {
                             return Err(PdfParserError::UnexpectedToken(other));
                         }
-                        Some(Err(e)) => return Err(e.clone()),
+                        Some(Err(e)) => return Err(e),
                         None => return Err(PdfParserError::Eof),
                     }
                 }
             }
+            Some(Ok(other)) => Err(PdfParserError::UnexpectedToken(other)),
+            Some(Err(e)) => Err(e),
             None => Err(PdfParserError::Eof),
-            _ => todo!(),
         }
+    }
+
+    fn parse_indirect_object(&mut self, num: i64, r#gen: i64) -> Result<PdfObject> {
+        let value = self.parse_object()?;
+
+        match self.next_token() {
+            Some(Ok(Token::Keyword(Keyword::EndObj))) => Ok(PdfObject::IndirectObject {
+                num,
+                r#gen,
+                value: Box::new(value),
+            }),
+            Some(Ok(Token::Keyword(Keyword::Stream))) => match value {
+                PdfObject::Dictionary(dict) => {
+                    let stream = self.parse_stream(dict)?;
+                    match self.next_token() {
+                        Some(Ok(Token::Keyword(Keyword::EndObj))) => {}
+                        Some(Ok(other)) => return Err(PdfParserError::UnexpectedToken(other)),
+                        Some(Err(e)) => return Err(e),
+                        None => return Err(PdfParserError::Eof),
+                    }
+                    Ok(PdfObject::IndirectObject {
+                        num,
+                        r#gen,
+                        value: Box::new(stream),
+                    })
+                }
+                _ => Err(PdfParserError::StreamWithoutDict),
+            },
+            Some(Ok(other)) => Err(PdfParserError::UnexpectedToken(other)),
+            Some(Err(e)) => Err(e),
+            None => Err(PdfParserError::Eof),
+        }
+    }
+
+    fn parse_stream(&mut self, dict: PdfDict) -> Result<PdfObject> {
+        let length_key: PdfName = b"Length".into();
+        let length = match dict.get_required(&length_key)? {
+            PdfObject::Integer(n) => *n as usize,
+            _ => return Err(PdfParserError::InvalidDictValue(length_key)),
+        };
+
+        self.tokens_queue.clear(); // discard any lookahead tokens peeked past the stream keyword
+
+        let data = self.lexer.read_stream_data(length)?;
+
+        match self.next_token() {
+            Some(Ok(Token::Keyword(Keyword::EndStream))) => {}
+            Some(Ok(other)) => return Err(PdfParserError::UnexpectedToken(other)),
+            Some(Err(e)) => return Err(e),
+            None => return Err(PdfParserError::Eof),
+        }
+
+        Ok(PdfObject::Stream { dict, data })
     }
 
     fn next_token(&mut self) -> Option<Result<Token>> {
@@ -130,7 +171,10 @@ impl<'a> Parser<'a> {
 mod tests {
     use pdfox_core::{PdfObject, PdfString};
 
-    use crate::{Lexer, PdfParserError, token::{Keyword, Token}};
+    use crate::{
+        Lexer, PdfParserError,
+        token::{Keyword, Token},
+    };
 
     use super::Parser;
 
@@ -172,7 +216,7 @@ mod tests {
     fn test_name() {
         assert_eq!(
             parser(b"/Type").parse_object(),
-            Ok(PdfObject::Name((*b"Type").into()))
+            Ok(PdfObject::Name(b"Type".into()))
         );
     }
 
@@ -218,7 +262,7 @@ mod tests {
             Ok(PdfObject::Array(vec![
                 PdfObject::Boolean(true),
                 PdfObject::Integer(1),
-                PdfObject::Name((*b"Name").into()),
+                PdfObject::Name(b"Name".into()),
             ]))
         );
     }
@@ -245,7 +289,7 @@ mod tests {
     fn test_dict_empty() {
         assert_eq!(
             parser(b"<<>>").parse_object(),
-            Ok(PdfObject::Dictionary(vec![]))
+            Ok(PdfObject::Dictionary(vec![].into()))
         );
     }
 
@@ -253,10 +297,9 @@ mod tests {
     fn test_dict_single_entry() {
         assert_eq!(
             parser(b"<</Type /Page>>").parse_object(),
-            Ok(PdfObject::Dictionary(vec![(
-                (*b"Type").into(),
-                PdfObject::Name((*b"Page").into()),
-            )]))
+            Ok(PdfObject::Dictionary(
+                vec![(b"Type".into(), PdfObject::Name(b"Page".into()),)].into()
+            ))
         );
     }
 
@@ -264,10 +307,13 @@ mod tests {
     fn test_dict_multiple_entries() {
         assert_eq!(
             parser(b"<</Width 100 /Height 200>>").parse_object(),
-            Ok(PdfObject::Dictionary(vec![
-                ((*b"Width").into(), PdfObject::Integer(100)),
-                ((*b"Height").into(), PdfObject::Integer(200)),
-            ]))
+            Ok(PdfObject::Dictionary(
+                vec![
+                    (b"Width".into(), PdfObject::Integer(100)),
+                    (b"Height".into(), PdfObject::Integer(200)),
+                ]
+                .into()
+            ))
         );
     }
 
@@ -275,10 +321,13 @@ mod tests {
     fn test_dict_nested() {
         assert_eq!(
             parser(b"<</Inner <</Key 1>>>>").parse_object(),
-            Ok(PdfObject::Dictionary(vec![(
-                (*b"Inner").into(),
-                PdfObject::Dictionary(vec![((*b"Key").into(), PdfObject::Integer(1),)]),
-            )]))
+            Ok(PdfObject::Dictionary(
+                vec![(
+                    b"Inner".into(),
+                    PdfObject::Dictionary(vec![(b"Key".into(), PdfObject::Integer(1))].into()),
+                )]
+                .into()
+            ))
         );
     }
 
@@ -286,10 +335,13 @@ mod tests {
     fn test_dict_with_array_value() {
         assert_eq!(
             parser(b"<</Kids [1 2]>>").parse_object(),
-            Ok(PdfObject::Dictionary(vec![(
-                (*b"Kids").into(),
-                PdfObject::Array(vec![PdfObject::Integer(1), PdfObject::Integer(2)]),
-            )]))
+            Ok(PdfObject::Dictionary(
+                vec![(
+                    b"Kids".into(),
+                    PdfObject::Array(vec![PdfObject::Integer(1), PdfObject::Integer(2)]),
+                )]
+                .into()
+            ))
         );
     }
 
@@ -338,10 +390,7 @@ mod tests {
 
     #[test]
     fn test_indirect_object_eof_after_obj() {
-        assert_eq!(
-            parser(b"1 2 obj").parse_object(),
-            Err(PdfParserError::Eof)
-        );
+        assert_eq!(parser(b"1 2 obj").parse_object(), Err(PdfParserError::Eof));
     }
 
     #[test]
@@ -359,10 +408,9 @@ mod tests {
     fn test_indirect_ref_as_dict_value() {
         assert_eq!(
             parser(b"<</Parent 3 0 R>>").parse_object(),
-            Ok(PdfObject::Dictionary(vec![(
-                (*b"Parent").into(),
-                PdfObject::IndirectRef(3, 0),
-            )]))
+            Ok(PdfObject::Dictionary(
+                vec![(b"Parent".into(), PdfObject::IndirectRef(3, 0),)].into()
+            ))
         );
     }
 
@@ -370,7 +418,7 @@ mod tests {
     fn test_indirect_ref_followed_by_other_token() {
         let mut p = parser(b"1 0 R /Next");
         assert_eq!(p.parse_object(), Ok(PdfObject::IndirectRef(1, 0)));
-        assert_eq!(p.parse_object(), Ok(PdfObject::Name((*b"Next").into())));
+        assert_eq!(p.parse_object(), Ok(PdfObject::Name(b"Next".into())));
     }
 
     // --- objets indirects ---
@@ -418,10 +466,9 @@ mod tests {
             Ok(PdfObject::IndirectObject {
                 num: 4,
                 r#gen: 0,
-                value: Box::new(PdfObject::Dictionary(vec![(
-                    (*b"Type").into(),
-                    PdfObject::Name((*b"Page").into()),
-                )])),
+                value: Box::new(PdfObject::Dictionary(
+                    vec![(b"Type".into(), PdfObject::Name(b"Page".into()),)].into()
+                )),
             })
         );
     }
@@ -450,7 +497,9 @@ mod tests {
     fn test_indirect_object_unexpected_token_instead_of_endobj() {
         assert_eq!(
             parser(b"1 0 obj 42 obj").parse_object(),
-            Err(PdfParserError::UnexpectedToken(Token::Keyword(Keyword::Obj)))
+            Err(PdfParserError::UnexpectedToken(Token::Keyword(
+                Keyword::Obj
+            )))
         );
     }
 
@@ -473,5 +522,72 @@ mod tests {
                 value: Box::new(PdfObject::Boolean(true)),
             })
         );
+    }
+
+    // --- streams ---
+
+    #[test]
+    fn test_stream_simple() {
+        let input = b"1 0 obj\n<< /Length 5 >>\nstream\nHello\nendstream\nendobj";
+        assert_eq!(
+            parser(input).parse_object(),
+            Ok(PdfObject::IndirectObject {
+                num: 1,
+                r#gen: 0,
+                value: Box::new(PdfObject::Stream {
+                    dict: vec![(b"Length".into(), PdfObject::Integer(5))].into(),
+                    data: (*b"Hello").into(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_stream_binary_data() {
+        let input = b"2 0 obj\n<< /Length 4 >>\nstream\n\x00\x01\x02\x03\nendstream\nendobj";
+        assert_eq!(
+            parser(input).parse_object(),
+            Ok(PdfObject::IndirectObject {
+                num: 2,
+                r#gen: 0,
+                value: Box::new(PdfObject::Stream {
+                    dict: vec![(b"Length".into(), PdfObject::Integer(4))].into(),
+                    data: vec![0x00, 0x01, 0x02, 0x03].into_boxed_slice(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_stream_missing_length() {
+        let input = b"1 0 obj\n<< /Type /XObject >>\nstream\nHello\nendstream\nendobj";
+        assert!(matches!(
+            parser(input).parse_object(),
+            Err(PdfParserError::PdfError(_))
+        ));
+    }
+
+    #[test]
+    fn test_stream_invalid_length_type() {
+        let input = b"1 0 obj\n<< /Length true >>\nstream\nHello\nendstream\nendobj";
+        assert_eq!(
+            parser(input).parse_object(),
+            Err(PdfParserError::InvalidDictValue(b"Length".into()))
+        );
+    }
+
+    #[test]
+    fn test_stream_without_dict() {
+        let input = b"1 0 obj\n42\nstream\nHello\nendstream\nendobj";
+        assert_eq!(
+            parser(input).parse_object(),
+            Err(PdfParserError::StreamWithoutDict)
+        );
+    }
+
+    #[test]
+    fn test_stream_eof_in_data() {
+        let input = b"1 0 obj\n<< /Length 100 >>\nstream\nHi\nendstream\nendobj";
+        assert_eq!(parser(input).parse_object(), Err(PdfParserError::Eof));
     }
 }

@@ -1,3 +1,4 @@
+use pdfox_core::{PdfError, PdfName};
 use thiserror::Error;
 
 use crate::token::Token;
@@ -12,6 +13,12 @@ pub enum PdfParserError {
     UnknownKeyword(String, usize),
     #[error("Unexpected token '{0:?}'")]
     UnexpectedToken(Token),
+    #[error("Invalid value for key '{0}'")]
+    InvalidDictValue(PdfName),
+    #[error("Stream keyword must follow a dictionary")]
+    StreamWithoutDict,
+    #[error("{0}")]
+    PdfError(#[from] PdfError),
 }
 
 pub type Result<T> = std::result::Result<T, PdfParserError>;
