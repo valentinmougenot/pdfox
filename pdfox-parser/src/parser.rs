@@ -102,12 +102,7 @@ impl<'a> Parser<'a> {
             Some(Ok(Token::Keyword(Keyword::Stream))) => match value {
                 PdfObject::Dictionary(dict) => {
                     let stream = self.parse_stream(dict)?;
-                    match self.next_token() {
-                        Some(Ok(Token::Keyword(Keyword::EndObj))) => {}
-                        Some(Ok(other)) => return Err(PdfParserError::UnexpectedToken(other)),
-                        Some(Err(e)) => return Err(e),
-                        None => return Err(PdfParserError::Eof),
-                    }
+                    self.expect_token(Token::Keyword(Keyword::EndObj))?;
                     Ok(PdfObject::IndirectObject {
                         num,
                         r#gen,
@@ -131,19 +126,18 @@ impl<'a> Parser<'a> {
 
         self.tokens_queue.clear(); // discard any lookahead tokens peeked past the stream keyword
 
-        let data = self.lexer.read_stream_data(length)?;
+        let data = self.lexer.read_bytes(length)?;
 
-        match self.next_token() {
-            Some(Ok(Token::Keyword(Keyword::EndStream))) => {}
-            Some(Ok(other)) => return Err(PdfParserError::UnexpectedToken(other)),
-            Some(Err(e)) => return Err(e),
-            None => return Err(PdfParserError::Eof),
-        }
+        self.expect_token(Token::Keyword(Keyword::EndStream))?;
 
         Ok(PdfObject::Stream { dict, data })
     }
 
-    fn next_token(&mut self) -> Option<Result<Token>> {
+    pub fn read_bytes(&mut self, length: usize) -> Result<Box<[u8]>> {
+        self.lexer.read_bytes(length)
+    }
+
+    pub fn next_token(&mut self) -> Option<Result<Token>> {
         if let Some(token) = self.tokens_queue.pop_front() {
             Some(token)
         } else {
@@ -165,6 +159,19 @@ impl<'a> Parser<'a> {
         }
         self.tokens_queue.get(n)
     }
+
+    pub fn expect_token(&mut self, token: Token) -> Result<()> {
+        match self.next_token() {
+            Some(Ok(t)) if t == token => Ok(()),
+            Some(Ok(t)) => Err(PdfParserError::UnexpectedToken(t)),
+            Some(Err(e)) => Err(e),
+            None => Err(PdfParserError::Eof),
+        }
+    }
+
+    pub fn skip_whitespace(&mut self) {
+        self.lexer.skip_whitespace();
+    }
 }
 
 #[cfg(test)]
@@ -182,7 +189,7 @@ mod tests {
         Parser::new(Lexer::new(input))
     }
 
-    // --- scalaires ---
+    // --- scalars ---
 
     #[test]
     fn test_boolean_true() {
@@ -358,7 +365,7 @@ mod tests {
         assert_eq!(parser(b"<</Key").parse_object(), Err(PdfParserError::Eof));
     }
 
-    // --- références indirectes ---
+    // --- indirect references ---
 
     #[test]
     fn test_indirect_ref_simple() {
@@ -421,7 +428,7 @@ mod tests {
         assert_eq!(p.parse_object(), Ok(PdfObject::Name(b"Next".into())));
     }
 
-    // --- objets indirects ---
+    // --- indirect objects ---
 
     #[test]
     fn test_indirect_object_integer() {

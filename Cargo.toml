@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "pdfox-core",
-    "pdfox-parser"
+    "pdfox-parser",
+    "pdfox-reader"
 ]
 resolver = "2"
 

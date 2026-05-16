@@ -236,7 +236,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn skip_whitespace(&mut self) {
+    pub fn skip_whitespace(&mut self) {
         self.bump_while(is_whitespace);
     }
 
@@ -265,7 +265,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn read_stream_data(&mut self, length: usize) -> Result<Box<[u8]>> {
+    pub fn read_bytes(&mut self, length: usize) -> Result<Box<[u8]>> {
         if !self.is_eof() && self.peek() == b'\r' {
             self.bump();
         }

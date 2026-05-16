@@ -1,6 +1,6 @@
 use crate::{PdfError, Result};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum PdfObject {
     Boolean(bool),
     Integer(i64),
@@ -22,7 +22,7 @@ pub enum PdfObject {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum PdfString {
     Literal(Box<[u8]>),
     Hex(Box<[u8]>),
@@ -61,7 +61,7 @@ impl std::fmt::Display for PdfName {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct PdfDict(Vec<(PdfName, PdfObject)>);
 
 impl PdfDict {
